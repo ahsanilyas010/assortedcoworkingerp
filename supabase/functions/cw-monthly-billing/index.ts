@@ -30,8 +30,14 @@ function nextMonthStart(from = new Date()): string {
 }
 
 async function authorize(req: Request, tenantFilter: string | null): Promise<{ ok: true; tenantIds: string[] } | { ok: false; status: number; error: string }> {
-  const cron = Deno.env.get("CW_CRON_SECRET");
   const given = req.headers.get("x-cw-cron-secret");
+  let cron = Deno.env.get("CW_CRON_SECRET") ?? "";
+  if (!cron && given) {
+    // Fallback: the secret lives in Vault (see migration cw_cron_jobs) and is
+    // readable only with the service role.
+    const { data } = await db.rpc("cw_get_cron_secret");
+    cron = typeof data === "string" ? data : "";
+  }
   if (cron && given && given === cron) {
     const { data } = await db.from("cw_tenants").select("id").order("created_at");
     const ids = (data ?? []).map((t) => t.id).filter((id) => !tenantFilter || id === tenantFilter);
