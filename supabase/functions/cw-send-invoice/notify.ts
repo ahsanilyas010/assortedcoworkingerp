@@ -7,6 +7,28 @@
 //   RESEND_API_KEY   Resend API key for transactional email
 //   RESEND_FROM      optional, e.g. "Assorted Coworking <billing@assorted.business>"
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.45.4";
+import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+
+// Secrets: read the edge function env var first; fall back to Supabase Vault
+// through cw_get_secret() (service role only, name allowlist in the database).
+const secretCache = new Map<string, string>();
+let secretsDb: SupabaseClient | null = null;
+export async function getSecret(name: string): Promise<string> {
+  const fromEnv = Deno.env.get(name);
+  if (fromEnv) return fromEnv;
+  const cached = secretCache.get(name);
+  if (cached) return cached;
+  try {
+    secretsDb ??= createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
+    const { data } = await secretsDb.rpc("cw_get_secret", { p_name: name });
+    const v = typeof data === "string" ? data : "";
+    if (v) secretCache.set(name, v);
+    return v;
+  } catch (e) {
+    console.error("getSecret failed", name, String(e));
+    return "";
+  }
+}
 
 export type Channel = "whatsapp" | "email";
 
@@ -34,7 +56,7 @@ export async function sendWhatsAppTemplate(opts: {
   params: string[];
   lang?: string;
 }): Promise<SendResult> {
-  const token = Deno.env.get("WA_ACCESS_TOKEN");
+  const token = await getSecret("WA_ACCESS_TOKEN");
   if (!token) return { ok: false, status: "skipped", error: "WA_ACCESS_TOKEN not set" };
   if (!opts.phoneNumberId) return { ok: false, status: "skipped", error: "tenant has no whatsapp_phone_number_id" };
   const body = {
@@ -72,9 +94,9 @@ export async function sendEmail(opts: {
   from?: string;
   replyTo?: string;
 }): Promise<SendResult> {
-  const key = Deno.env.get("RESEND_API_KEY");
+  const key = await getSecret("RESEND_API_KEY");
   if (!key) return { ok: false, status: "skipped", error: "RESEND_API_KEY not set" };
-  const from = opts.from ?? Deno.env.get("RESEND_FROM") ?? "Assorted Coworking <onboarding@resend.dev>";
+  const from = opts.from ?? ((await getSecret("RESEND_FROM")) || "Assorted Coworking <onboarding@resend.dev>");
   try {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
