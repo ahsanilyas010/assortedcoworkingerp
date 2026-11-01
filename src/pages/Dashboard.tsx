@@ -33,6 +33,14 @@ export default function Dashboard() {
       return data as Member[];
     },
   });
+  const draftCount = useQuery({
+    queryKey: ["invoices", tenantId, "draft-count"],
+    queryFn: async () => {
+      const { count, error } = await supabase.from("cw_invoices").select("id", { count: "exact", head: true }).eq("tenant_id", tenantId).eq("status", "draft");
+      if (error) throw error;
+      return count ?? 0;
+    },
+  });
   const due = useQuery({
     queryKey: ["invoices", tenantId, "due"],
     queryFn: async () => {
@@ -57,6 +65,15 @@ export default function Dashboard() {
         <StatCard label="Outstanding" value={m ? pkr(m.outstanding) : "…"} sub={m && Number(m.overdue) > 0 ? `${pkr(m.overdue)} overdue` : "nothing overdue"} tone={m && Number(m.overdue) > 0 ? "bad" : undefined} />
         <StatCard label="Collected this month" value={m ? pkr(m.collected_this_month) : "…"} sub={m ? `expenses ${pkr(m.expenses_this_month)}` : undefined} tone="good" />
       </div>
+
+      {(draftCount.data ?? 0) > 0 && (
+        <Link to="/invoices?f=draft" className="block">
+          <Card className="p-4 rounded-2xl border-2 border-amber-300 bg-amber-50">
+            <div className="font-bold text-amber-900">{draftCount.data} invoice{draftCount.data === 1 ? "" : "s"} waiting for your approval</div>
+            <div className="text-xs text-amber-800">Review each one and tap Approve &amp; send.</div>
+          </Card>
+        </Link>
+      )}
 
       <section className="space-y-2">
         <div className="flex items-center justify-between">
