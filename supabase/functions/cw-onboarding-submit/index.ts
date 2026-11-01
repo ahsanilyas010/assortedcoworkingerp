@@ -70,7 +70,15 @@ Deno.serve(async (req) => {
   h = cors(origin, tenant.allowed_origins ?? []);
 
   const pricing = (tenant.pricing ?? []) as PricingEntry[];
-  const plan = pricing.find((p) => p.code === s(d.plan_code, 40) && !p.addon);
+  // "custom": the member typed an agreed monthly amount per seat. It is bounded here and the member
+  // stays pending_payment with a flag in the notes until the owner verifies it.
+  const isCustom = s(d.plan_code, 40) === "custom";
+  const customAmount = Math.round(Number(d.custom_amount) || 0);
+  const plan: PricingEntry | undefined = isCustom
+    ? customAmount >= 1000 && customAmount <= 500000
+      ? { code: "custom", name: "Custom plan", price: customAmount, deposit: true }
+      : undefined
+    : pricing.find((p) => p.code === s(d.plan_code, 40) && !p.addon);
   const addonEntry = pricing.find((p) => p.code === "meeting_room_addon");
 
   const full_name = s(d.full_name, 120);
@@ -129,7 +137,10 @@ Deno.serve(async (req) => {
     status: "pending_payment",
     emergency_contact: s(d.emergency_contact, 160) || null,
     heard_from: s(d.heard_from, 60) || null,
-    notes: s(d.notes, 500) || null,
+    notes:
+      [s(d.notes, 500), isCustom ? `CUSTOM AMOUNT entered by member: ${pkr(customAmount)} per seat. Verify against the payment before activating.` : ""]
+        .filter(Boolean)
+        .join("\n") || null,
   };
 
   const q = existing
@@ -205,6 +216,7 @@ Deno.serve(async (req) => {
           `<p><b>${full_name}</b> (${member.member_no})<br>${phone} · ${email}${memberRow.company ? ` · ${memberRow.company}` : ""}</p>
            <p>${plan.name} × ${seats}${addon ? " + meeting room" : ""}, starting ${dateLabel(new Date(start_date))}.<br>
            Invoice ${invoice?.invoice_no ?? ""}: <b>${pkr(total)}</b> (incl. deposit ${pkr(deposit)}).</p>
+           ${isCustom ? `<p><b>The member entered a custom amount (${pkr(customAmount)} per seat). Please verify it before activating.</b></p>` : ""}
            <p>Approve the member in the ERP once the payment screenshot arrives.</p>`,
         ),
       });

@@ -32,31 +32,53 @@ export function MemberSheet({ open, onOpenChange, member }: Props) {
   const plans = useMemo(() => (tenant?.pricing ?? []).filter((p) => !p.addon), [tenant]);
   const addon = useMemo(() => (tenant?.pricing ?? []).find((p) => p.code === "meeting_room_addon"), [tenant]);
 
+  const CUSTOM = "custom";
   const [f, setF] = useState({
     full_name: "", phone: "", email: "", company: "", cnic: "", plan_code: plans[0]?.code ?? "", seats: "1",
     meeting_room: false, start_date: todayIso(), billing_day: String(tenant?.billing_day ?? 28), status: "active" as MemberStatus,
     emergency_contact: "", notes: "",
+    custom_fee: "", custom_label: "", custom_code: "", deposit: "",
   });
+  const [depositTouched, setDepositTouched] = useState(false);
   const set = (k: keyof typeof f, v: string | boolean) => setF((s) => ({ ...s, [k]: v }));
 
   useEffect(() => {
     if (!open) return;
+    setDepositTouched(false);
     if (member) {
+      // Open as "Custom amount" when the member's stored fee is not what the rate card would give
+      // (imported members, negotiated rates). Saving then keeps their real fee instead of resetting it.
+      const stdPlan = plans.find((p) => p.code === member.plan_code);
+      const hasMeeting = member.plan_name.includes("Meeting Room");
+      const std = stdPlan ? Number(stdPlan.price) * member.seats + (hasMeeting && addon ? Number(addon.price) : 0) : null;
+      const isCustom = !stdPlan || std === null || Math.abs(Number(member.monthly_fee) - std) > 0.5;
       setF({
         full_name: member.full_name, phone: member.phone, email: member.email ?? "", company: member.company ?? "", cnic: member.cnic ?? "",
-        plan_code: member.plan_code, seats: String(member.seats), meeting_room: member.plan_name.includes("Meeting Room"),
+        plan_code: isCustom ? CUSTOM : member.plan_code, seats: String(member.seats), meeting_room: !isCustom && hasMeeting,
         start_date: member.start_date, billing_day: String(member.billing_day), status: member.status,
         emergency_contact: member.emergency_contact ?? "", notes: member.notes ?? "",
+        custom_fee: isCustom ? String(Number(member.monthly_fee)) : "",
+        custom_label: isCustom ? member.plan_name.replace(" + Meeting Room", "") : "",
+        custom_code: isCustom ? member.plan_code : "",
+        deposit: String(Number(member.deposit)),
       });
     } else {
-      setF((s) => ({ ...s, full_name: "", phone: "", email: "", company: "", cnic: "", seats: "1", meeting_room: false, start_date: todayIso(), status: "active", emergency_contact: "", notes: "", plan_code: plans[0]?.code ?? "" }));
+      setF((s) => ({ ...s, full_name: "", phone: "", email: "", company: "", cnic: "", seats: "1", meeting_room: false, start_date: todayIso(), status: "active", emergency_contact: "", notes: "", plan_code: plans[0]?.code ?? "", custom_fee: "", custom_label: "", custom_code: "", deposit: "" }));
     }
-  }, [open, member, plans]);
+  }, [open, member, plans, addon]);
 
+  const isCustom = f.plan_code === CUSTOM;
   const plan = plans.find((p) => p.code === f.plan_code);
   const seats = Math.max(1, Number(f.seats) || 1);
-  const monthly = plan ? Number(plan.price) * seats + (f.meeting_room && addon ? Number(addon.price) : 0) : 0;
-  const deposit = plan && plan.deposit !== false ? Number(tenant?.deposit_per_seat ?? 0) * seats : 0;
+  const customFee = Number(f.custom_fee) || 0;
+  const monthly = isCustom ? customFee : plan ? Number(plan.price) * seats + (f.meeting_room && addon ? Number(addon.price) : 0) : 0;
+  const defaultDeposit = isCustom || (plan && plan.deposit !== false) ? Number(tenant?.deposit_per_seat ?? 0) * seats : 0;
+
+  // New members: keep the deposit in step with plan and seats until it is edited by hand.
+  useEffect(() => {
+    if (open && !member && !depositTouched) setF((s) => ({ ...s, deposit: String(defaultDeposit) }));
+  }, [open, member, depositTouched, defaultDeposit]);
+  const deposit = Math.max(0, Number(f.deposit) || 0);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -64,7 +86,8 @@ export function MemberSheet({ open, onOpenChange, member }: Props) {
       if (!f.full_name.trim()) throw new Error("Name is required");
       const phone = normalizePhone(f.phone);
       if (phone.length < 10) throw new Error("Enter a valid phone");
-      if (!plan) throw new Error("Pick a plan");
+      if (!isCustom && !plan) throw new Error("Pick a plan");
+      if (isCustom && !(customFee > 0)) throw new Error("Enter the monthly amount");
       const row = {
         tenant_id: tenant.id,
         full_name: f.full_name.trim(),
@@ -72,9 +95,9 @@ export function MemberSheet({ open, onOpenChange, member }: Props) {
         email: f.email.trim() || null,
         company: f.company.trim() || null,
         cnic: f.cnic.replace(/\D/g, "") || null,
-        plan_code: plan.code,
-        plan_name: plan.name + (f.meeting_room ? " + Meeting Room" : ""),
-        plan_price: Number(plan.price),
+        plan_code: isCustom ? f.custom_code || CUSTOM : plan!.code,
+        plan_name: isCustom ? f.custom_label.trim() || "Custom plan" : plan!.name + (f.meeting_room ? " + Meeting Room" : ""),
+        plan_price: isCustom ? Math.round((customFee / seats) * 100) / 100 : Number(plan!.price),
         seats,
         monthly_fee: monthly,
         deposit,
@@ -114,20 +137,34 @@ export function MemberSheet({ open, onOpenChange, member }: Props) {
               <SelectTrigger className="h-12 rounded-xl"><SelectValue placeholder="Plan" /></SelectTrigger>
               <SelectContent>
                 {plans.map((p) => <SelectItem key={p.code} value={p.code}>{p.name} · {pkr(p.price)}</SelectItem>)}
+                <SelectItem value={CUSTOM}>Custom amount (enter manually)</SelectItem>
               </SelectContent>
             </Select>
           </Field>
+          {isCustom && (
+            <div className="grid grid-cols-2 gap-3 rounded-xl border border-dashed border-primary/40 p-3">
+              <Field label="Monthly amount (PKR)" hint="Total billed each month">
+                <Input type="number" inputMode="numeric" className="h-12 rounded-xl" value={f.custom_fee} onChange={(e) => set("custom_fee", e.target.value)} placeholder="e.g. 12000" />
+              </Field>
+              <Field label="Plan label" hint="Shown on invoices">
+                <Input className="h-12 rounded-xl" value={f.custom_label} onChange={(e) => set("custom_label", e.target.value)} placeholder="Hot Desk" />
+              </Field>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-3">
             <Field label="Seats"><Input type="number" min={1} className="h-12 rounded-xl" value={f.seats} onChange={(e) => set("seats", e.target.value)} /></Field>
             <Field label="Start date"><Input type="date" className="h-12 rounded-xl" value={f.start_date} onChange={(e) => set("start_date", e.target.value)} /></Field>
             <Field label="Billing day"><Input type="number" min={1} max={28} className="h-12 rounded-xl" value={f.billing_day} onChange={(e) => set("billing_day", e.target.value)} /></Field>
           </div>
-          {addon && (
+          {addon && !isCustom && (
             <label className="flex items-center gap-3 rounded-xl border p-3 text-sm">
               <Checkbox checked={f.meeting_room} onCheckedChange={(v) => set("meeting_room", v === true)} />
               {addon.name} (+{pkr(addon.price)}/month)
             </label>
           )}
+          <Field label="Security deposit (PKR)" hint="Refundable. Edit if this member paid a different amount.">
+            <Input type="number" inputMode="numeric" className="h-12 rounded-xl" value={f.deposit} onChange={(e) => { setDepositTouched(true); set("deposit", e.target.value); }} />
+          </Field>
           <Field label="Status">
             <Select value={f.status} onValueChange={(v) => set("status", v)}>
               <SelectTrigger className="h-12 rounded-xl"><SelectValue /></SelectTrigger>
