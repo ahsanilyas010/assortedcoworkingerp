@@ -80,7 +80,7 @@ Deno.serve(async (req) => {
     const { data: tenant } = await db.from("cw_tenants").select("*").eq("id", tenantId).single();
     if (!tenant) continue;
     summary.tenants.push(tenant.slug);
-    const { data: members } = await db.from("cw_members").select("*").eq("tenant_id", tenantId).eq("status", "active");
+    const { data: members } = await db.from("cw_members").select("*").eq("tenant_id", tenantId).eq("status", "active").eq("billing_cycle", "monthly").gt("monthly_fee", 0);
     const bank = (tenant.bank_details ?? {}) as Record<string, string>;
     const bankText = bankLine(bank);
 
