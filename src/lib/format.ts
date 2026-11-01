@@ -33,7 +33,7 @@ export const STATUS_LABELS: Record<string, string> = {
   active: "Active",
   suspended: "Suspended",
   inactive: "Inactive",
-  draft: "Draft",
+  draft: "Needs approval",
   sent: "Unpaid",
   paid: "Paid",
   overdue: "Overdue",

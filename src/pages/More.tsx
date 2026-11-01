@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ChevronRight, MessageSquare, Settings, Play, ExternalLink, LogOut } from "lucide-react";
-import { supabase } from "@/lib/supabase";
+import { callFn } from "@/lib/functions";
 import { useAuth } from "@/context/AuthContext";
 import { useTenant } from "@/context/TenantContext";
 import { Button } from "@/components/ui/button";
@@ -13,12 +13,14 @@ export default function More() {
   const { tenant, role } = useTenant();
 
   const run = useMutation({
-    mutationFn: async (dry_run: boolean) => {
-      const { data, error } = await supabase.functions.invoke("cw-monthly-billing", { body: { tenant_id: tenant?.id, dry_run } });
-      if (error) throw error;
-      return data as { created?: number; sent?: number; failed?: number; would_create?: number; members?: number };
-    },
-    onSuccess: (d, dry) => toast.success(dry ? `Dry run: ${d.would_create ?? d.members ?? 0} invoices would be created` : `Created ${d.created ?? 0}, sent ${d.sent ?? 0}, failed ${d.failed ?? 0}`),
+    mutationFn: (dry_run: boolean) =>
+      callFn<{ created?: number; would_create?: number; members?: number; period?: string }>("cw-monthly-billing", { tenant_id: tenant?.id, dry_run }),
+    onSuccess: (d, dry) =>
+      toast.success(
+        dry
+          ? `${d.would_create ?? 0} new invoices would be drafted for ${d.period}`
+          : `${d.created ?? 0} draft invoices created. Open Invoices > To approve.`,
+      ),
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -38,11 +40,11 @@ export default function More() {
       <Row to="/more/messages" icon={MessageSquare} label="Message log" sub="WhatsApp and email sends" />
       <Row to="/more/settings" icon={Settings} label="Settings" sub="Pricing, bank details, billing day" />
       <Card className="p-4 rounded-2xl space-y-2">
-        <div className="font-semibold flex items-center gap-2"><Play className="h-4 w-4 text-primary" /> Monthly billing</div>
-        <p className="text-xs text-muted-foreground">Runs automatically on the {tenant?.billing_day}th at 9:00 AM. Use these to preview or run it now.</p>
+        <div className="font-semibold flex items-center gap-2"><Play className="h-4 w-4 text-primary" /> Monthly invoices</div>
+        <p className="text-xs text-muted-foreground">On the {tenant?.billing_day}th at 9:00 AM next month\u2019s invoices are drafted automatically and you get an email. Nothing is sent to members until you approve each invoice.</p>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" className="rounded-xl" disabled={run.isPending} onClick={() => run.mutate(true)}>Preview</Button>
-          <Button size="sm" className="rounded-xl" disabled={run.isPending || role !== "owner"} onClick={() => confirm("Create and send next month's invoices to all active members now?") && run.mutate(false)}>Run now</Button>
+          <Button size="sm" className="rounded-xl" disabled={run.isPending || role !== "owner"} onClick={() => run.mutate(false)}>Create drafts now</Button>
         </div>
       </Card>
       <Card className="p-4 rounded-2xl space-y-1">

@@ -63,7 +63,7 @@ export function RecordPaymentSheet({ open, onOpenChange, member, invoice }: Prop
         .select("*")
         .eq("tenant_id", tenantId)
         .eq("member_id", memberId)
-        .in("status", ["sent", "overdue", "draft"])
+        .in("status", ["sent", "overdue"])
         .order("due_date");
       if (error) throw error;
       return data as Invoice[];

@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { RecordPaymentSheet } from "@/components/RecordPaymentSheet";
 import { MemberSheet } from "@/components/MemberSheet";
 import { fmtDate, monthLabel, pkr, prettyPhone, waLink } from "@/lib/format";
+import { describeSend, sendInvoice } from "@/lib/functions";
 import type { Invoice, Member, MemberStatus, Payment } from "@/lib/types";
 
 export default function MemberDetail() {
@@ -58,13 +59,14 @@ export default function MemberDetail() {
   });
 
   const resend = useMutation({
-    mutationFn: async (invoice_id: string) => {
-      const { data, error } = await supabase.functions.invoke("cw-send-invoice", { body: { invoice_id } });
-      if (error) throw error;
-      return data as { whatsapp?: string; email?: string };
-    },
-    onSuccess: (d) => { toast.success(`WhatsApp: ${d?.whatsapp ?? "?"} · Email: ${d?.email ?? "?"}`); qc.invalidateQueries({ queryKey: ["messages"] }); },
+    mutationFn: (invoice_id: string) => sendInvoice(invoice_id, false),
+    onSuccess: (d) => { toast.success(describeSend(d)); qc.invalidateQueries({ queryKey: ["messages"] }); },
     onError: (e: Error) => toast.error(`Could not send: ${e.message}`),
+  });
+  const approve = useMutation({
+    mutationFn: (invoice_id: string) => sendInvoice(invoice_id, true),
+    onSuccess: (d) => { toast.success(`Approved. ${describeSend(d)}`); qc.invalidateQueries(); },
+    onError: (e: Error) => { toast.error(e.message); qc.invalidateQueries(); },
   });
 
   const m = member.data;
@@ -123,7 +125,12 @@ export default function MemberDetail() {
                 <StatusBadge status={i.status} />
               </div>
             </div>
-            {i.status !== "paid" && i.status !== "cancelled" && (
+            {i.status === "draft" && (
+              <div className="flex gap-2 mt-3">
+                <Button size="sm" className="rounded-xl" disabled={approve.isPending} onClick={() => approve.mutate(i.id)}>Approve &amp; send</Button>
+              </div>
+            )}
+            {(i.status === "sent" || i.status === "overdue") && (
               <div className="flex gap-2 mt-3">
                 <Button size="sm" className="rounded-xl" onClick={() => setPay(i)}>Record payment</Button>
                 <Button size="sm" variant="outline" className="rounded-xl" disabled={resend.isPending} onClick={() => resend.mutate(i.id)}>Resend</Button>

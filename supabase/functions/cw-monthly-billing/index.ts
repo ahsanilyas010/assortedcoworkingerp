@@ -1,19 +1,21 @@
 // cw-monthly-billing
-// Creates next month's invoice for every active member of a tenant and sends it
-// by WhatsApp template + email. Idempotent per (tenant, member, month, kind).
+// Creates DRAFT invoices for the coming month for every active, monthly, priced member.
+// Nothing is sent to members here. The owner reviews and approves each invoice in the
+// app, which calls cw-send-invoice with approve=true (that is what sends WhatsApp + email).
 //
 // Callers:
-//   - pg_cron on the 28th: header  x-cw-cron-secret: <CW_CRON_SECRET>
-//   - the owner PWA ("Run now" / "Preview"): Authorization: Bearer <user JWT>
+//   - pg_cron on the 28th: header  x-cw-cron-secret: <secret stored in Vault>
+//   - the owner PWA ("Create drafts" / "Preview"): Authorization: Bearer <user JWT>
 //     (the user must be an owner in cw_tenant_users for the tenant)
 // Body: { tenant_id?: string, dry_run?: boolean, period?: "YYYY-MM-01" }
 // Deployed with verify_jwt OFF (the cron path has no user JWT); auth is done here.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
-import { bankLine, dateLabel, emailShell, logMessage, monthLabel, pkr, sendEmail, sendWhatsAppTemplate } from "./notify.ts";
+import { dateLabel, emailShell, logMessage, monthLabel, sendEmail } from "./notify.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+const APP_URL = "https://assortedcoworking-erp.vercel.app";
 const db = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
 const cors = {
@@ -33,8 +35,7 @@ async function authorize(req: Request, tenantFilter: string | null): Promise<{ o
   const given = req.headers.get("x-cw-cron-secret");
   let cron = Deno.env.get("CW_CRON_SECRET") ?? "";
   if (!cron && given) {
-    // Fallback: the secret lives in Vault (see migration cw_cron_jobs) and is
-    // readable only with the service role.
+    // The secret lives in Vault (see migration cw_cron_jobs), readable only with the service role.
     const { data } = await db.rpc("cw_get_cron_secret");
     cron = typeof data === "string" ? data : "";
   }
@@ -73,16 +74,16 @@ Deno.serve(async (req) => {
 
   const period = /^\d{4}-\d{2}-01$/.test(body.period ?? "") ? body.period! : nextMonthStart();
   const periodDate = new Date(period + "T00:00:00Z");
+  const dueDate = new Date(periodDate.getTime() + 5 * 86400000).toISOString().slice(0, 10);
   const dry = body.dry_run === true;
-  const summary = { ok: true, period, dry_run: dry, members: 0, would_create: 0, created: 0, sent: 0, failed: 0, skipped: 0, tenants: [] as string[] };
+  const summary = { ok: true, period, dry_run: dry, members: 0, would_create: 0, created: 0, failed: 0, tenants: [] as string[] };
 
   for (const tenantId of auth.tenantIds) {
     const { data: tenant } = await db.from("cw_tenants").select("*").eq("id", tenantId).single();
     if (!tenant) continue;
     summary.tenants.push(tenant.slug);
     const { data: members } = await db.from("cw_members").select("*").eq("tenant_id", tenantId).eq("status", "active").eq("billing_cycle", "monthly").gt("monthly_fee", 0);
-    const bank = (tenant.bank_details ?? {}) as Record<string, string>;
-    const bankText = bankLine(bank);
+    let createdHere = 0;
 
     for (const m of members ?? []) {
       summary.members++;
@@ -91,59 +92,40 @@ Deno.serve(async (req) => {
       summary.would_create++;
       if (dry) continue;
 
-      const { data: inv, error } = await db
-        .from("cw_invoices")
-        .insert({
-          tenant_id: tenantId,
-          member_id: m.id,
-          period_month: period,
-          kind: "monthly",
-          issue_date: new Date().toISOString().slice(0, 10),
-          due_date: period,
-          amount: m.monthly_fee,
-          status: "sent",
-          notes: `${m.plan_name} × ${m.seats}`,
-        })
-        .select("*")
-        .single();
-      if (error || !inv) {
+      const { error } = await db.from("cw_invoices").insert({
+        tenant_id: tenantId,
+        member_id: m.id,
+        period_month: period,
+        kind: "monthly",
+        issue_date: new Date().toISOString().slice(0, 10),
+        due_date: dueDate,
+        amount: m.monthly_fee,
+        status: "draft",
+        notes: `${m.plan_name} × ${m.seats}`,
+      });
+      if (error) {
         console.error("invoice insert failed", error);
         summary.failed++;
         continue;
       }
       summary.created++;
+      createdHere++;
+    }
 
-      const first = String(m.full_name).split(" ")[0];
+    // Tell the owner there is something to approve (email only; members are not contacted).
+    if (!dry && createdHere > 0 && tenant.owner_email) {
       const month = monthLabel(periodDate);
-      const wa = await sendWhatsAppTemplate({
-        phoneNumberId: tenant.whatsapp_phone_number_id,
-        to: m.phone,
-        template: "cw_monthly_invoice",
-        params: [first, inv.invoice_no, month, pkr(inv.amount), dateLabel(periodDate), bankText],
+      const res = await sendEmail({
+        to: tenant.owner_email,
+        subject: `${createdHere} invoices for ${month} are waiting for your approval`,
+        html: emailShell(
+          "Invoices ready for approval",
+          `<p>${createdHere} draft invoices for <b>${month}</b> were created (due ${dateLabel(new Date(dueDate + "T00:00:00Z"))}).</p>
+           <p>Nothing has been sent to members yet. Open the app, review each invoice and tap <b>Approve &amp; send</b>.</p>
+           <p><a href="${APP_URL}/invoices?f=draft" style="display:inline-block;background:#1C4585;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none;font-weight:600">Review invoices</a></p>`,
+        ),
       });
-      await logMessage(db, { tenant_id: tenantId, member_id: m.id, invoice_id: inv.id, channel: "whatsapp", template: "cw_monthly_invoice", recipient: m.phone }, wa);
-      if (wa.status === "sent") summary.sent++; else if (wa.status === "failed") summary.failed++; else summary.skipped++;
-
-      if (m.email) {
-        const em = await sendEmail({
-          to: m.email,
-          replyTo: tenant.email ?? undefined,
-          subject: `${tenant.name} invoice ${inv.invoice_no} — ${month}`,
-          html: emailShell(
-            `Invoice ${inv.invoice_no}`,
-            `<p>Hi ${first},</p>
-             <p>Here is your ${tenant.name} membership invoice for <b>${month}</b>.</p>
-             <table style="border-collapse:collapse;width:100%;margin:12px 0">
-               <tr><td>${m.plan_name} × ${m.seats}</td><td align="right">${pkr(inv.amount)}</td></tr>
-               <tr><td style="border-top:1px solid #e6e9f0;padding-top:8px"><b>Total due by ${dateLabel(periodDate)}</b></td><td align="right" style="border-top:1px solid #e6e9f0;padding-top:8px"><b>${pkr(inv.amount)}</b></td></tr>
-             </table>
-             <p><b>Bank transfer:</b><br>${bank.bank ?? ""}<br>${bank.account_title ?? ""}<br>${bank.account_no ?? ""}</p>
-             <p>Please WhatsApp the payment screenshot to ${tenant.phone ?? "+92 321 852 6405"} once done. Thank you!</p>`,
-          ),
-        });
-        await logMessage(db, { tenant_id: tenantId, member_id: m.id, invoice_id: inv.id, channel: "email", template: "monthly_invoice", recipient: m.email }, em);
-        if (em.status === "sent") summary.sent++; else if (em.status === "failed") summary.failed++; else summary.skipped++;
-      }
+      await logMessage(db, { tenant_id: tenantId, channel: "email", template: "owner_drafts_ready", recipient: tenant.owner_email }, res);
     }
   }
   return json(summary);
