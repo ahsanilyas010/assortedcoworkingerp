@@ -106,9 +106,13 @@ export function splitEmails(raw: unknown): string[] {
   return [...new Set(list.map((e) => e.trim().toLowerCase()).filter((e) => EMAIL_RE.test(e)))];
 }
 
+/** Every email is blind-copied here so the billing mailbox keeps a record of everything sent. */
+export const DEFAULT_BCC = ["billing@assorted.group"];
+
 export async function sendEmail(opts: {
   to: string | string[];
   cc?: string[];
+  bcc?: string[];
   subject: string;
   html: string;
   from?: string;
@@ -120,6 +124,7 @@ export async function sendEmail(opts: {
   const from = opts.from ?? ((await getSecret("RESEND_FROM")) || "Assorted Coworking <onboarding@resend.dev>");
   const to = Array.isArray(opts.to) ? opts.to : [opts.to];
   const cc = (opts.cc ?? []).filter((e) => !to.includes(e));
+  const bcc = (opts.bcc ?? DEFAULT_BCC).filter((e) => !to.includes(e) && !cc.includes(e));
   try {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -128,6 +133,7 @@ export async function sendEmail(opts: {
         from,
         to,
         cc: cc.length ? cc : undefined,
+        bcc: bcc.length ? bcc : undefined,
         subject: opts.subject,
         html: opts.html,
         reply_to: opts.replyTo,
