@@ -46,6 +46,7 @@ export interface Member {
   full_name: string;
   phone: string;
   email: string | null;
+  cc_emails: string[];
   company: string | null;
   cnic: string | null;
   plan_code: string;
