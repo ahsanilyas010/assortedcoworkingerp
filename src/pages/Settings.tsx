@@ -8,22 +8,28 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
+import { parseEmails } from "@/lib/functions";
 import { Field } from "@/components/Field";
 import type { PricingEntry, Tenant } from "@/lib/types";
 
 export default function Settings() {
   const { tenant, role, refresh } = useTenant();
   const [t, setT] = useState<Tenant | null>(tenant);
-  useEffect(() => setT(tenant), [tenant]);
+  const [ccText, setCcText] = useState((tenant?.invoice_cc ?? []).join(", "));
+  useEffect(() => { setT(tenant); setCcText((tenant?.invoice_cc ?? []).join(", ")); }, [tenant]);
   const owner = role === "owner";
 
   const save = useMutation({
     mutationFn: async () => {
       if (!t) return;
+      const cc = parseEmails(ccText);
+      if (cc.invalid.length) throw new Error(`Not a valid email: ${cc.invalid.join(", ")}`);
       const { error } = await supabase.from("cw_tenants").update({
         name: t.name, address: t.address, phone: t.phone, email: t.email, owner_email: t.owner_email, owner_phone: t.owner_phone,
         bank_details: t.bank_details, billing_day: Number(t.billing_day), deposit_per_seat: Number(t.deposit_per_seat), capacity: Number(t.capacity),
         pricing: t.pricing.map((p) => ({ ...p, price: Number(p.price) })),
+        invoice_cc: cc.valid, auto_send_invoices: t.auto_send_invoices,
       }).eq("id", t.id);
       if (error) throw error;
     },
@@ -61,6 +67,16 @@ export default function Settings() {
           <Field label="Deposit / seat"><Input type="number" className="h-11 rounded-xl" value={t.deposit_per_seat} onChange={(e) => set("deposit_per_seat", e.target.value)} /></Field>
           <Field label="Capacity (seats)"><Input type="number" className="h-11 rounded-xl" value={t.capacity} onChange={(e) => set("capacity", e.target.value)} /></Field>
         </div>
+        <div className="flex items-start justify-between gap-4 rounded-xl border p-3">
+          <div>
+            <div className="text-sm font-semibold">Send invoices automatically on the {t.billing_day}th</div>
+            <p className="text-xs text-muted-foreground">On: every active monthly member gets their invoice (WhatsApp and email with the PDF) without you approving each one. Off: invoices wait as drafts for you to approve one by one.</p>
+          </div>
+          <Switch checked={t.auto_send_invoices} disabled={!owner} onCheckedChange={(v) => set("auto_send_invoices", v)} />
+        </div>
+        <Field label="CC on every invoice email" hint="Optional. Separate several addresses with commas.">
+          <Input className="h-11 rounded-xl" inputMode="email" placeholder="accounts@example.com" value={ccText} onChange={(e) => setCcText(e.target.value)} />
+        </Field>
         <Field label="Bank"><Input className="h-11 rounded-xl" value={t.bank_details.bank ?? ""} onChange={(e) => setBank("bank", e.target.value)} /></Field>
         <Field label="Account title"><Input className="h-11 rounded-xl" value={t.bank_details.account_title ?? ""} onChange={(e) => setBank("account_title", e.target.value)} /></Field>
         <Field label="Account number"><Input className="h-11 rounded-xl" value={t.bank_details.account_no ?? ""} onChange={(e) => setBank("account_no", e.target.value)} /></Field>

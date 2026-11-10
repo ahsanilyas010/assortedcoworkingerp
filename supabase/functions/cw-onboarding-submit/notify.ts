@@ -87,21 +87,52 @@ export async function sendWhatsAppTemplate(opts: {
   }
 }
 
+export interface EmailAttachment {
+  filename: string;
+  content: Uint8Array;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+const EMAIL_RE = /^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$/;
+
+/** Splits "a@x.com, b@y.com; c@z.com" into valid, lower-cased, de-duplicated addresses. */
+export function splitEmails(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? raw.map(String) : String(raw ?? "").split(/[,;\s]+/);
+  return [...new Set(list.map((e) => e.trim().toLowerCase()).filter((e) => EMAIL_RE.test(e)))];
+}
+
 export async function sendEmail(opts: {
-  to: string;
+  to: string | string[];
+  cc?: string[];
   subject: string;
   html: string;
   from?: string;
   replyTo?: string;
+  attachments?: EmailAttachment[];
 }): Promise<SendResult> {
   const key = await getSecret("RESEND_API_KEY");
   if (!key) return { ok: false, status: "skipped", error: "RESEND_API_KEY not set" };
   const from = opts.from ?? ((await getSecret("RESEND_FROM")) || "Assorted Coworking <onboarding@resend.dev>");
+  const to = Array.isArray(opts.to) ? opts.to : [opts.to];
+  const cc = (opts.cc ?? []).filter((e) => !to.includes(e));
   try {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to: [opts.to], subject: opts.subject, html: opts.html, reply_to: opts.replyTo }),
+      body: JSON.stringify({
+        from,
+        to,
+        cc: cc.length ? cc : undefined,
+        subject: opts.subject,
+        html: opts.html,
+        reply_to: opts.replyTo,
+        attachments: opts.attachments?.map((a) => ({ filename: a.filename, content: toBase64(a.content) })),
+      }),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, status: "failed", error: json?.message ?? `http ${res.status}` };

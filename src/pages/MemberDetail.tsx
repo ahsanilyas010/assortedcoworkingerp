@@ -11,7 +11,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { RecordPaymentSheet } from "@/components/RecordPaymentSheet";
 import { MemberSheet } from "@/components/MemberSheet";
 import { fmtDate, monthLabel, pkr, prettyPhone, waLink } from "@/lib/format";
-import { describeSend, sendInvoice } from "@/lib/functions";
+import { SendInvoiceSheet, type SendTarget } from "@/components/SendInvoiceSheet";
 import type { Invoice, Member, MemberStatus, Payment } from "@/lib/types";
 
 export default function MemberDetail() {
@@ -58,16 +58,9 @@ export default function MemberDetail() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const resend = useMutation({
-    mutationFn: (invoice_id: string) => sendInvoice(invoice_id, false),
-    onSuccess: (d) => { toast.success(describeSend(d)); qc.invalidateQueries({ queryKey: ["messages"] }); },
-    onError: (e: Error) => toast.error(`Could not send: ${e.message}`),
-  });
-  const approve = useMutation({
-    mutationFn: (invoice_id: string) => sendInvoice(invoice_id, true),
-    onSuccess: (d) => { toast.success(`Approved. ${describeSend(d)}`); qc.invalidateQueries(); },
-    onError: (e: Error) => { toast.error(e.message); qc.invalidateQueries(); },
-  });
+  const [sending, setSending] = useState<SendTarget | null>(null);
+  const openSend = (i: Invoice, approve: boolean) =>
+    setSending({ id: i.id, invoice_no: i.invoice_no, amount: Number(i.amount), member_name: member.data?.full_name ?? "", approve });
 
   const m = member.data;
   if (member.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -127,13 +120,13 @@ export default function MemberDetail() {
             </div>
             {i.status === "draft" && (
               <div className="flex gap-2 mt-3">
-                <Button size="sm" className="rounded-xl" disabled={approve.isPending} onClick={() => approve.mutate(i.id)}>Approve &amp; send</Button>
+                <Button size="sm" className="rounded-xl" onClick={() => openSend(i, true)}>Approve &amp; send</Button>
               </div>
             )}
             {(i.status === "sent" || i.status === "overdue") && (
               <div className="flex gap-2 mt-3">
                 <Button size="sm" className="rounded-xl" onClick={() => setPay(i)}>Record payment</Button>
-                <Button size="sm" variant="outline" className="rounded-xl" disabled={resend.isPending} onClick={() => resend.mutate(i.id)}>Resend</Button>
+                <Button size="sm" variant="outline" className="rounded-xl" onClick={() => openSend(i, false)}>Resend</Button>
               </div>
             )}
           </Card>
@@ -153,6 +146,7 @@ export default function MemberDetail() {
 
       <RecordPaymentSheet open={pay !== false} onOpenChange={(v) => !v && setPay(false)} member={m} invoice={pay || null} />
       <MemberSheet open={edit} onOpenChange={setEdit} member={m} />
+      <SendInvoiceSheet target={sending} onClose={() => setSending(null)} />
     </div>
   );
 }

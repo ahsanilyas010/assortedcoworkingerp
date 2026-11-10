@@ -41,7 +41,12 @@ export default function More() {
       <Row to="/more/settings" icon={Settings} label="Settings" sub="Pricing, bank details, billing day" />
       <Card className="p-4 rounded-2xl space-y-2">
         <div className="font-semibold flex items-center gap-2"><Play className="h-4 w-4 text-primary" /> Monthly invoices</div>
-        <p className="text-xs text-muted-foreground">On the {tenant?.billing_day}th at 9:00 AM next month\u2019s invoices are drafted automatically and you get an email. Nothing is sent to members until you approve each invoice.</p>
+        <p className="text-xs text-muted-foreground">
+          {tenant?.auto_send_invoices
+            ? `On the ${tenant?.billing_day}th at 9:00 AM next month's invoice is created and sent automatically (WhatsApp and email with the PDF) to every active monthly member, and you get a summary email.`
+            : `On the ${tenant?.billing_day}th at 9:00 AM next month's invoices are drafted and you get an email. Nothing is sent until you approve each invoice.`}{" "}
+          Change this in Settings.
+        </p>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" className="rounded-xl" disabled={run.isPending} onClick={() => run.mutate(true)}>Preview</Button>
           <Button size="sm" className="rounded-xl" disabled={run.isPending || role !== "owner"} onClick={() => run.mutate(false)}>Create drafts now</Button>
