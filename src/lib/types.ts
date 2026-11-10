@@ -33,6 +33,8 @@ export interface Tenant {
   capacity: number;
   pricing: PricingEntry[];
   allowed_origins: string[];
+  invoice_cc: string[];
+  auto_send_invoices: boolean;
 }
 
 export type MemberStatus = "pending_payment" | "active" | "suspended" | "inactive";

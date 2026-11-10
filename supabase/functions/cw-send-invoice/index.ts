@@ -2,9 +2,13 @@
 // Sends an invoice (WhatsApp template + email) from the owner PWA.
 //   - { invoice_id, approve: true }  approves a DRAFT invoice (draft -> sent) and sends it once.
 //   - { invoice_id }                 resends an already-sent or overdue invoice.
+//   - cc: string[]                   optional extra CC addresses for this send (the tenant's default CC is always added).
+//   - { invoice_id, action: "pdf" }  returns the invoice PDF as base64 without sending anything.
+// Every email carries the full PDF invoice as an attachment.
 // Deployed with verify_jwt ON; the caller must be a member of the invoice's tenant.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
-import { bankLine, dateLabel, emailShell, logMessage, monthLabel, pkr, sendEmail, sendWhatsAppTemplate } from "./notify.ts";
+import { splitEmails } from "./notify.ts";
+import { deliverInvoice, makePdf } from "./deliver.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const db = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
@@ -26,10 +30,14 @@ Deno.serve(async (req) => {
 
   let invoice_id = "";
   let approve = false;
+  let wantPdf = false;
+  let cc: string[] = [];
   try {
-    const b = JSON.parse(await req.text()) as { invoice_id?: string; approve?: boolean };
+    const b = JSON.parse(await req.text()) as { invoice_id?: string; approve?: boolean; action?: string; cc?: unknown };
     invoice_id = String(b.invoice_id ?? "");
     approve = b.approve === true;
+    wantPdf = b.action === "pdf";
+    cc = splitEmails(b.cc).slice(0, 5);
   } catch { /* fallthrough */ }
   if (!invoice_id) return json({ ok: false, error: "invoice_id required" }, 400);
 
@@ -38,6 +46,12 @@ Deno.serve(async (req) => {
   const { data: membership } = await db.from("cw_tenant_users").select("role").eq("tenant_id", inv.tenant_id).eq("user_id", u.user.id).maybeSingle();
   if (!membership) return json({ ok: false, error: "forbidden" }, 403);
 
+  if (wantPdf) {
+    const bytes = await makePdf(inv);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return json({ ok: true, filename: `${inv.invoice_no}.pdf`, pdf_base64: btoa(bin) });
+  }
   if (inv.status === "paid" || inv.status === "cancelled") return json({ ok: false, error: `Invoice is already ${inv.status}` }, 409);
   if (inv.status === "draft") {
     if (!approve) return json({ ok: false, error: "This invoice is a draft. Approve it first." }, 409);
@@ -48,35 +62,6 @@ Deno.serve(async (req) => {
     return json({ ok: false, error: "Already approved and sent" }, 409);
   }
 
-  const m = inv.cw_members, t = inv.cw_tenants;
-  const bank = (t.bank_details ?? {}) as Record<string, string>;
-  const period = new Date(inv.period_month + "T00:00:00Z");
-  const due = new Date(inv.due_date + "T00:00:00Z");
-  const first = String(m.full_name).split(" ")[0];
-  const month = inv.kind === "monthly" ? monthLabel(period) : inv.kind === "signup" ? "your membership signup" : inv.notes ?? "services";
-
-  const wa = await sendWhatsAppTemplate({
-    phoneNumberId: t.whatsapp_phone_number_id,
-    to: m.phone,
-    template: "cw_monthly_invoice",
-    params: [first, inv.invoice_no, month, pkr(inv.amount), dateLabel(due), bankLine(bank)],
-  });
-  await logMessage(db, { tenant_id: inv.tenant_id, member_id: m.id, invoice_id: inv.id, channel: "whatsapp", template: "cw_monthly_invoice", recipient: m.phone }, wa);
-
-  let em: { status: "sent" | "failed" | "skipped"; ok: boolean; error?: string } = { status: "skipped", ok: false, error: "member has no email" };
-  if (m.email) {
-    em = await sendEmail({
-      to: m.email,
-      replyTo: t.email ?? undefined,
-      subject: `${t.name} invoice ${inv.invoice_no}${inv.kind === "monthly" ? " — " + month : ""}`,
-      html: emailShell(
-        `Invoice ${inv.invoice_no}`,
-        `<p>Hi ${first},</p><p>Your ${t.name} invoice for ${month}: <b>${pkr(inv.amount)}</b>, due ${dateLabel(due)}.</p>
-         <p><b>Bank transfer:</b><br>${bank.bank ?? ""}<br>${bank.account_title ?? ""}<br>${bank.account_no ?? ""}</p>
-         <p>Please WhatsApp the payment screenshot to ${t.phone ?? "+92 321 852 6405"} once done. Thank you!</p>`,
-      ),
-    });
-    await logMessage(db, { tenant_id: inv.tenant_id, member_id: m.id, invoice_id: inv.id, channel: "email", template: approve ? "invoice" : "invoice_resend", recipient: m.email }, em);
-  }
-  return json({ ok: true, approved: approve, whatsapp: wa.status, email: em.status, whatsapp_error: wa.error, email_error: em.error });
+  const r = await deliverInvoice(db, inv, { template: approve ? "invoice" : "invoice_resend", cc });
+  return json({ ok: true, approved: approve, whatsapp: r.whatsapp, email: r.email, pdf: r.pdf, cc: r.cc, whatsapp_error: r.whatsapp_error, email_error: r.email_error });
 });
