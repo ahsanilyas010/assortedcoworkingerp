@@ -11,6 +11,7 @@ import { Field } from "@/components/Field";
 import { supabase } from "@/lib/supabase";
 import { useTenant } from "@/context/TenantContext";
 import { pkr, todayIso } from "@/lib/format";
+import { parseEmails } from "@/lib/functions";
 import type { Member, MemberStatus } from "@/lib/types";
 
 interface Props {
@@ -34,7 +35,7 @@ export function MemberSheet({ open, onOpenChange, member }: Props) {
 
   const CUSTOM = "custom";
   const [f, setF] = useState({
-    full_name: "", phone: "", email: "", company: "", cnic: "", plan_code: plans[0]?.code ?? "", seats: "1",
+    full_name: "", phone: "", email: "", cc_emails: "", company: "", cnic: "", plan_code: plans[0]?.code ?? "", seats: "1",
     meeting_room: false, start_date: todayIso(), billing_day: String(tenant?.billing_day ?? 28), status: "active" as MemberStatus,
     emergency_contact: "", notes: "",
     custom_fee: "", custom_label: "", custom_code: "", deposit: "",
@@ -53,7 +54,7 @@ export function MemberSheet({ open, onOpenChange, member }: Props) {
       const std = stdPlan ? Number(stdPlan.price) * member.seats + (hasMeeting && addon ? Number(addon.price) : 0) : null;
       const isCustom = !stdPlan || std === null || Math.abs(Number(member.monthly_fee) - std) > 0.5;
       setF({
-        full_name: member.full_name, phone: member.phone, email: member.email ?? "", company: member.company ?? "", cnic: member.cnic ?? "",
+        full_name: member.full_name, phone: member.phone, email: member.email ?? "", cc_emails: (member.cc_emails ?? []).join(", "), company: member.company ?? "", cnic: member.cnic ?? "",
         plan_code: isCustom ? CUSTOM : member.plan_code, seats: String(member.seats), meeting_room: !isCustom && hasMeeting,
         start_date: member.start_date, billing_day: String(member.billing_day), status: member.status,
         emergency_contact: member.emergency_contact ?? "", notes: member.notes ?? "",
@@ -63,7 +64,7 @@ export function MemberSheet({ open, onOpenChange, member }: Props) {
         deposit: String(Number(member.deposit)),
       });
     } else {
-      setF((s) => ({ ...s, full_name: "", phone: "", email: "", company: "", cnic: "", seats: "1", meeting_room: false, start_date: todayIso(), status: "active", emergency_contact: "", notes: "", plan_code: plans[0]?.code ?? "", custom_fee: "", custom_label: "", custom_code: "", deposit: "" }));
+      setF((s) => ({ ...s, full_name: "", phone: "", email: "", cc_emails: "", company: "", cnic: "", seats: "1", meeting_room: false, start_date: todayIso(), status: "active", emergency_contact: "", notes: "", plan_code: plans[0]?.code ?? "", custom_fee: "", custom_label: "", custom_code: "", deposit: "" }));
     }
   }, [open, member, plans, addon]);
 
@@ -88,11 +89,14 @@ export function MemberSheet({ open, onOpenChange, member }: Props) {
       if (phone.length < 10) throw new Error("Enter a valid phone");
       if (!isCustom && !plan) throw new Error("Pick a plan");
       if (isCustom && !(customFee > 0)) throw new Error("Enter the monthly amount");
+      const ccParsed = parseEmails(f.cc_emails);
+      if (ccParsed.invalid.length) throw new Error(`Not a valid CC email: ${ccParsed.invalid.join(", ")}`);
       const row = {
         tenant_id: tenant.id,
         full_name: f.full_name.trim(),
         phone,
         email: f.email.trim() || null,
+        cc_emails: ccParsed.valid,
         company: f.company.trim() || null,
         cnic: f.cnic.replace(/\D/g, "") || null,
         plan_code: isCustom ? f.custom_code || CUSTOM : plan!.code,
@@ -129,6 +133,9 @@ export function MemberSheet({ open, onOpenChange, member }: Props) {
           <div className="grid grid-cols-2 gap-3">
             <Field label="WhatsApp number"><Input type="tel" className="h-12 rounded-xl" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="0321…" /></Field>
             <Field label="Email"><Input type="email" className="h-12 rounded-xl" value={f.email} onChange={(e) => set("email", e.target.value)} /></Field>
+            <Field label="CC emails" hint="Extra addresses copied on every invoice email. Separate several with commas.">
+              <Input type="email" multiple inputMode="email" className="h-12 rounded-xl" placeholder="accounts@company.com, partner@company.com" value={f.cc_emails} onChange={(e) => set("cc_emails", e.target.value)} />
+            </Field>
             <Field label="Company"><Input className="h-12 rounded-xl" value={f.company} onChange={(e) => set("company", e.target.value)} /></Field>
             <Field label="CNIC"><Input className="h-12 rounded-xl" value={f.cnic} onChange={(e) => set("cnic", e.target.value)} /></Field>
           </div>

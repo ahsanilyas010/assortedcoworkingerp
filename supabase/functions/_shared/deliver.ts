@@ -49,7 +49,7 @@ export async function deliverInvoice(
     return out;
   }
   const [to, ...others] = addresses;
-  const cc = [...new Set([...others, ...(t.invoice_cc ?? []), ...(opts.cc ?? [])].map((e: string) => e.toLowerCase()))].filter((e) => e !== to);
+  const cc = [...new Set([...others, ...(m.cc_emails ?? []), ...(t.invoice_cc ?? []), ...(opts.cc ?? [])].map((e: string) => e.toLowerCase()))].filter((e) => e !== to);
   out.cc = cc;
 
   let attachments: { filename: string; content: Uint8Array }[] | undefined;
